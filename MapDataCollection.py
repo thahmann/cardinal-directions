@@ -1,4 +1,4 @@
-import arcpy,os,sys,math
+import arcpy,os,sys,math,collections
 
 homeFolder = 'C:\Users\Greg\ArcGIS\Test.gdb'
 
@@ -14,6 +14,12 @@ def collectIntersections(inpShape,outFC):
         arcpy.Intersect_analysis(inFeatures,intersectOutput,"","","LINE")
     except Exception as err:
         print(err.args[0])
+
+#Erases all of the elements in an ArcMap table
+def clearTable(tableCursor):
+    with arcpy.da.UpdateCursor(tableCursor,"OBJECTID") as cursor:
+        for row in cursor:
+            cursor.deleteRow()           
 
 #Collects the centroid of each polygon
 ##inpShape - name of a shapefile of polygons
@@ -34,30 +40,42 @@ def collectMassCenters(inpShape,inpColName,outTab,outColName,clearBool = False):
         pt = row[0]
         to_crs.insertRow([row[1],pt[0],pt[1]])
 
+#For two crossing lines, decides whether or not it forms a bubble
+#An even number of crossings implies a bubble
+def countCrosses(baseLine,detailLine):
+    if(baseLine.disjoint(detailLine)):
+        print "Bad input to countCrosses. No crossing."
+        return None
+    myDif = detailLine.difference(baseLine)
+    pts = baseLine.intersect(myDif,1)
+    if(pts.pointCount%2==0):
+        return "bubble"
+    else:
+        return "partial"
 
-#From each object, breaks the surrounding area into 8 sectors and collects
-#    what things are in each sector
-#Each sector is represented as the overlap between two major quarters
-#    For example, the overlap between the N quarter and NE quarter is N,NE 
-#Data collected is in the form: FromObject, ToObject, Dir, Completeness
-#Completeness is any one of:
-#    complete (The ToObject goes entirely through a sector
-#    partial  (The ToObject goes partially through a sector. Additionally marked
-#              clockwise or counterclockwise for which direction it exits)
-#    inside   (Additionally marked with the angle to the center of the ToObject)
-#    bubble   (The border of the ToObject enters and exits the sector on the
-#              same side)
+#Given two points, calculates the angle from one to the other in radians
+def polar_ang(origin_x,origin_y,pt_x,pt_y):
+    dx = pt_x - origin_x
+    dy = pt_y - origin_y
+    ang = math.atan2(dy,dx)
+    if(ang<0):
+        ang += 2*math.pi
+    return math.degrees(ang)
+
+#From each object, breaks the surrounding area into 16 sectors and collects
+#    what things are in each sector.
+#Data collected is in the form: ReferenceObj, TargetObj, Dir, MidAngle
 ##inpShape - name of a shapefile of polygons
 ##inpColName - column in above shapefile which names each polygon
 ##inpFC - name of feature class containing shared borders between polygons
 ##outTab - name of table where the data will be written
 ##clearBool - False appends data to output table, True clears the table first
-def findBorders(inpShape,inpColName,inpFC,outTab,clearBool = False):
+def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool = False):
     polyFN = os.path.join(homeFolder,inpShape)
     poly_crs = arcpy.da.SearchCursor(polyFN,["Shape@","Shape@XY",inpColName])
     borders = os.path.join(homeFolder,inpFC)
     sectors = os.path.join(homeFolder,outTab)
-    sector_keys = ["FromObj","ToObj","Dir","Completeness"]
+    sector_keys = ["ReferenceObj","TargetObj","Dir","Completeness"]
     sector_crs = arcpy.da.InsertCursor(sectors,sector_keys)
     if(clearBool):
         clearTable(sectors)
@@ -66,22 +84,33 @@ def findBorders(inpShape,inpColName,inpFC,outTab,clearBool = False):
         cx = center[0]
         cy = center[1]
         extent = poly_row[0].extent
-        trp = max(extent.XMax-cx,extent.YMax-cy)
-        tlp = max(cx-extent.XMin,extent.YMax-cy)
-        blp = max(cx-extent.XMin,cy-extent.YMin)
-        brp = max(extent.XMax-cx,cy-extent.YMin)
-        C = arcpy.Point(cx,cy)
-        TR = arcpy.Point(cx+trp,cy+trp)
-        TC = arcpy.Point(cx,extent.YMax)
-        TL = arcpy.Point(cx-tlp,cy+tlp)
-        CL = arcpy.Point(extent.XMin,cy)
-        BL = arcpy.Point(cx-blp,cy-blp)
-        BC = arcpy.Point(cx,extent.YMin)
-        BR = arcpy.Point(cx+brp,cy-brp)
-        CR = arcpy.Point(extent.XMax,cy)
-        PTS = [TR,TC,TL,CL,BL,BC,BR,CR,TR]
-        DIR = ["N,NE","N,NW","W,NW","W,SW","S,SW","S,SE","E,SE","E,NE"]
-        UNKNOWN = [x+"-CW" for x in DIR]+[x+"-CCW" for x in DIR]
+        box = max(cx - extent.XMin,extent.XMax - cx,
+                  cy - extent.YMin,extent.YMax - cy)+1
+        PTS = []
+        C = arcpy.Point(cx,cy)#Center
+        PTS.append(arcpy.Point(cx+box,cy))#E 
+        PTS.append(arcpy.Point(cx+box,cy+box*0.4142))#ENE
+        PTS.append(arcpy.Point(cx+box,cy+box))#NE
+        PTS.append(arcpy.Point(cx+box*0.4142,cy+box))#NNE
+        PTS.append(arcpy.Point(cx,cy+box))#N
+        PTS.append(arcpy.Point(cx-box*0.4142,cy+box))#NNW
+        PTS.append(arcpy.Point(cx-box,cy+box))#NW
+        PTS.append(arcpy.Point(cx-box,cy+box*0.4142))#WNW
+        PTS.append(arcpy.Point(cx-box,cy))#W
+        PTS.append(arcpy.Point(cx-box,cy-box*0.4142))#WSW
+        PTS.append(arcpy.Point(cx-box,cy-box))#SW
+        PTS.append(arcpy.Point(cx-box*0.4142,cy-box))#SSW
+        PTS.append(arcpy.Point(cx,cy-box))#S
+        PTS.append(arcpy.Point(cx+box*0.4142,cy-box))#SSE
+        PTS.append(arcpy.Point(cx+box,cy-box))#SE
+        PTS.append(arcpy.Point(cx+box,cy-box*0.4142))#ESE
+        PTS.append(arcpy.Point(cx+box,cy))#E (again)
+        DIR = ["EENE","NENE","ENNE","NNNE","NNNW","WNNW","NWNW","WWNW",
+               "WWSW","SWSW","WSSW","SSSW","SSSE","ESSE","SESE","EESE"]
+        UNKNOWN = [x+"-all" for x in DIR]
+        #UNKNOWN is used to capture what sections of various sectors
+        #    have not been described. This allows us to get a more
+        #    complete understanding of underdefined areas.
         POLY = []
         for i in range(len(PTS)-1):
             POLY.append(arcpy.Polygon(arcpy.Array([C,PTS[i],PTS[i+1],C])))
@@ -91,306 +120,161 @@ def findBorders(inpShape,inpColName,inpFC,outTab,clearBool = False):
         borders_crs = arcpy.da.SearchCursor(borders,["Shape@",inpColName])
         border_row = borders_crs.next()
         while border_row:
+            #Assumes that there are two copies of each border object,
+            #    one from each object on the shared border. 
             br1 = border_row
             border_row = borders_crs.next()
             br2 = border_row
             if(poly_row[2]==br2[1]):
+                #Ensures that the current polygon shares its name with br1
                 temp = br1
                 br1 = br2
                 br2 = temp
             if(poly_row[2]==br1[1]):
                 for i in range(len(POLY)):
+                    #LINES[i] is clockwise, LINES[1+1] is ccw
                     if(not POLY[i].disjoint(br1[0])):
                         temp_dir = DIR[i]
                         wholeness = "x"
                         if((not LINES[i].disjoint(br1[0])) and
                            (not LINES[i+1].disjoint(br1[0]))):
                             wholeness = "complete"
-                            try:
-                                UNKNOWN.remove(temp_dir+"-CW")
-                            except:
-                                pass
-                            try:
-                                UNKNOWN.remove(temp_dir+"-CCW")
-                            except:
-                                pass
+                            if(temp_dir+"-all" in UNKNOWN):
+                                UNKNOWN.remove(temp_dir+"-all")
+                            if(temp_dir+"-cw" in UNKNOWN):
+                                UNKNOWN.remove(temp_dir+"-cw")
+                            if(temp_dir+"-ccw" in UNKNOWN):
+                                UNKNOWN.remove(temp_dir+"-ccw")
                             over = POLY[i].intersect(br1[0],2)
                             if(over.isMultipart):
                                 wholeness = "hole"
-                                UNKNOWN.append(temp_dir+"-C")
+                                midStr = temp_dir+"-"+str((i+0.5)*22.5)
+                                UNKNOWN.append(midStr)
                                 for partNum in range(over.partCount):
                                     part = arcpy.Polyline(over.getPart(partNum))
                                     if((not LINES[i].disjoint(part)) and
                                        (not LINES[i+1].disjoint(part))):
                                         wholeness = "complete"
-                                        UNKNOWN.remove(temp_dir+"-C")
+                                        UNKNOWN.remove(midStr)
+                                        break
                                     
                         else:
                             if(not ((not(LINES[i].disjoint(br1[0]))) or
                                     (not(LINES[i+1].disjoint(br1[0]))))):
                                 wholeness = "inside"
-                                mid = br1[0].positionAlongLine(0.50,True)[0]
-                                midAng = int(polar_ang(C.X,C.Y,mid.X,mid.Y))
-                                wholeness += "-"+str(midAng)
                             elif(not (LINES[i].disjoint(br1[0]))):
-                                wholeness = countCrosses(LINES[i],br1[0])
-                                wholeness += "-cw"
-                                try:
-                                    UNKNOWN.remove(temp_dir+"-CW")
-                                except:
-                                    pass
+                                wholeness = countCrosses(LINES[i],br1[0])                                if(temp_dir+"-all" in UNKNOWN):
+                                    UNKNOWN.remove(temp_dir+"-all")
+                                    UNKNOWN.append(temp_dir+"-ccw")
+                                if(temp_dir+"-cw" in UNKNOWN):
+                                    UNKNOWN.remove(temp_dir+"-cw")
                             else:
                                 wholeness = countCrosses(LINES[i+1],br1[0])
-                                wholeness += "-ccw"
-                                try:
-                                    UNKNOWN.remove(temp_dir+"-CCW")
-                                except:
-                                    pass
+                                if(temp_dir+"-all" in UNKNOWN):
+                                    UNKNOWN.remove(temp_dir+"-all")
+                                    UNKNOWN.append(temp_dir+"-cw")
+                                if(temp_dir+"-ccw" in UNKNOWN):
+                                    UNKNOWN.remove(temp_dir+"-ccw")
+                        mid = br1[0].positionAlongLine(0.50,True)[0]
+                        midAng = int(polar_ang(C.X,C.Y,mid.X,mid.Y))
+                        wholeness += "-"+str(midAng)
                         sector_crs.insertRow([br1[1],br2[1],temp_dir,wholeness])
                         
             try:
                 border_row = borders_crs.next()
             except StopIteration:
                 break
-        while(len(UNKNOWN)>0):
-            parts = UNKNOWN[0].split("-")
-            if(parts[1]=="C"):
-                sector_crs.insertRow([poly_row[2],"Unknown",
-                                     parts[0],"inside-?"])
-            elif(parts[1]=="CW"):
-               used = False
-               for others in UNKNOWN[1:]:
-                   if(("CCW" in others) and (parts[0] in others)):
-                       sector_crs.insertRow([poly_row[2],"Unknown",
-                                            parts[0],"complete"])
-                       used = True
-                       UNKNOWN.remove(others)
-                       break
-               if(not used):
-                   sector_crs.insertRow([poly_row[2],"Unknown",
-                                        parts[0],"partial-cw"])
-            elif(parts[1]=="CCW"):
-                sector_crs.insertRow([poly_row[2],"Unknown",
-                                     parts[0],"partial-ccw"])
-            del UNKNOWN[0]
-    
-##inpSectors - file created as per the findBorders function
-def objectsAndDirections(inpSectors,clearBool=False):
-    sectors = os.path.join(homeFolder,inpSectors)
-    sector_keys = ["FromObj","ToObj","Dir","Completeness"]
-    sector_crs = arcpy.da.SearchCursor(sectors,sector_keys)
-    labelSet = {'N':set(),'E':set(),'S':set(),'W':set(),
-                'NE':set(),'SE':set(),'SW':set(),'NW':set()}
-    undecidedLabels = ['N','NE','E','SE','S','SW','W','NW']
-    unusedObjects = []
-    objectSet = {}
-    objectCCW = {}
-    insides = {}
-    duals = []
-    finished = False        
-    row = sector_crs.next()
-    currentObject = row[0]
-    while(not finished):
-        ########## PART 1: RETRIEVING THE MINED INFORMATION ##########
-        # Just loading the information into memory.                  #
-        # Collecting and ordering the sectors that each section of   #
-        #   border passes through, as well as the center angles for  #
-        #   those inside a sector.                                   #
-        ##############################################################
-        print "----- Reference object:",currentObject,"-----"
-        while(row[0]==currentObject):
-            if(row[1] not in objectSet):
-                objectSet[row[1]] = set(row[2].split(","))
-                unusedObjects.append(row[1])
+        #Converts the representation in UNKNOWN to a more definitive one
+        if(len(UNKNOWN)>0):
+            if(len(UNKNOWN)==1):
+                parts = UNKNOWN[0].split("-")
+                sector_crs.insertRow([poly_row[2],"Unknown",parts[0],
+                                      "inside-"+parts[1]])
             else:
-                objectSet[row[1]] = objectSet[row[1]] | set(row[2].split(","))
-            if("inside" in row[3]):
-                insides[row[1]]=row[3].split("-")[1]
-            if("partial-ccw" in row[3]):
-                sp = row[2].split(",")
-                if(clockwiseRot(sp[0])==sp[1]):
-                    objectCCW[row[1]]=sp[1]
-                else:
-                    objectCCW[row[1]]=sp[0]
-            try:
-                row = sector_crs.next()
-            except:
-                row = ["x"]
-                print "cS1:",objectSet
-        for key,value in objectSet.iteritems():
-            if(key in objectCCW):
-                objectSet[key] = sortSet(value,objectCCW[key])
-            else:
-                objectSet[key] = sortSet(value)
-        ############### PART 2: FIRST-PASS ASSIGNMENTS ###############
-        # Assigns to each object the label in the center of its      #
-        #   range.                                                   #
-        # Keeps track of which objects got two labels.               #
-        ##############################################################
-        for key,value in objectSet.iteritems():
-            if(len(value)%2==0):
-                if(len(value)==2):
-                    label = value[int((int(insides[key])%45)/22.5)]
-                    labelSet[label] |= set([key])
-                    try:
-                        undecidedLabels.remove(label)
-                    except:
-                        pass
-                else:
-                    duals.append(key)
-                    labelSet[value[len(value)/2]] |= set([key])
-                    labelSet[value[(len(value)/2)-1]] |= set([key])
-                    try:
-                        undecidedLabels.remove(value[(len(value)/2)-1])
-                    except:
-                        pass
-                    try:
-                        undecidedLabels.remove(value[len(value)/2])
-                    except:
-                        pass
-            else:
-                labelSet[value[len(value)/2]] |= set([key])
-                try:
-                    undecidedLabels.remove(value[len(value)/2])
-                except:
-                    pass
-            try:
-                unusedObjects.remove(key)
-            except:
-                pass
-        ################## PART 3: RESOLVE CONFLICTS #################
-        # Rule 1: When two objects are within a single sector, we    #
-        #         must increase granularity and grant the new label  #
-        #         to the object closest to the midpoint.             #
-        # Rule 2: Duals concede one of their labels if there another #
-        #         object whch lays claim to it.                      #
-        # Rule 3: Gives precidence to objects which span multiple    #
-        #         sectors over those entirely inside one.            #
-        # Rule 4: Priority is given to objects for which the label   #
-        #         is closer the center of their range of labels.     #
-        ##############################################################
-        fixing = True
-        while(fixing):
-            fixing = False
-            try:
-                for key,value in labelSet.iteritems():
-                    value = list(value)
-                    if(len(value)==2):
-                        inVal = 0
-                        if((value[0] in insides) and (value[1] in insides)):
-                            full = True
-                            for v in value:
-                                for l in objectSet[v]:
-                                    if(len(l)==0):
-                                        full=False
-                            if(full):
-                                newLabel = objectSet[value[0]]
-                                claimer = value[0]
-                                if(abs(int(insides[value[1]])%45-22.5)<
-                                   abs(int(insides[value[0]])%45-22.5)):
-                                    newLabel = objectSet[value[1]]
-                                    claimer = value[1]
-                                if(len(newLabel[0])==1):
-                                    newLabel = newLabel[0]+newLabel[1]
-                                else:
-                                    newLabel = newLabel[1]+newLabel[0]
-                                labelSet[newLabel] = set([claimer])
-                                labelSet[key].discard(claimer)
-                                continue
-                        if((value[0] in insides) and (value[1] in duals)):
-                            value = [value[1],value[0]]
-                        if((value[1] in insides) and (value[0] in duals)):
-                            duals.remove(value[0])
-                            labelSet[key].discard(value[0])
-                            continue
-                        if(value[1] in insides):
-                            value = [value[1],value[0]]
-                        if(value[0] in insides and value[1] not in insides):
-                            newLabel = objectSet[value[0]]
-                            if(len(newLabel[0])==1):
-                                newLabel = newLabel[0]+newLabel[1]
-                            else:
-                                newLabel = newLabel[1]+newLabel[0]
-                            labelSet[newLabel] = set([value[0]])
-                            labelSet[key].discard(value[0])
-                        else:
-                            priority = 100000
-                            claimer = "x"
-                            lastfail = "x"
-                            for v in value:
-                                span = objectSet[v]
-                                newPriority = abs((len(span)/2.0 - 0.5) - span.index(key))
-                                if(newPriority<priority):
-                                    priority = newPriority
-                                    lastfail = claimer
-                                    claimer = v
-                                else:
-                                    lastfail = v
-                            if(lastfail in duals):
-                                duals.remove(lastfail)
-                                labelSet[key].discard(lastfail)
-                            else:
-                                priority = 100000
-                                claimer = "x"
-                                edge = True
-                                span = objectSet[lastfail]
-                                for l in span:
-                                    newEdge = (span[0]==l or span[-1]==l)
-                                    newPriority = abs((len(span)/2.0 - 0.5) - span.index(l))
-                                    if(len(labelSet[l])==0):
-                                        if(claimer=="x" or newPriority<priority or
-                                           (newPriority==priority and edge==True and newEdge==False)):
-                                            claimer = l
-                                            edge = newEdge
-                                            priority = newPriority
-                                labelSet[claimer] |= set([lastfail])
-                                labelSet[key].discard(lastfail)
-                                undecidedLabels.remove(claimer)
-            except:
-                fixing = True
-        ################ PART 4: USE REMAINING LABELS ################
-        # Unused labels are given to whichever object has the lowest #
-        #   priority for them.                                       #
-        ##############################################################
-        while(len(undecidedLabels)>0):
-            l = undecidedLabels[0]
-            claimer = "x"
-            edge = True
-            priority = 10000
-            for myObject,span in objectSet.iteritems():
-                if l in span:
-                    newEdge = (span[0]==l or span[-1]==l)
-                    newPriority = abs((len(span)/2.0 - 0.5) - span.index(l))
-                    if(claimer=="x" or newPriority<priority or
-                       (newPriority==priority and edge==True and newEdge==False)):
-                        claimer = myObject
-                        edge = newEdge
-                        priority = newPriority
-            labelSet[l] |= set([claimer])
-            del undecidedLabels[0]
-        print "lS",labelSet
-        # End current object. Below here resets data structures for next loop.
-        if(row[0] is not "x"):
-            currentObject = row[0]
-            labelSet = {'N':set(),'E':set(),'S':set(),'W':set(),
-                'NE':set(),'SE':set(),'SW':set(),'NW':set()}
-            undecidedLabels = ['N','NE','E','SE','S','SW','W','NW']
-            unusedObjects = []
-            objectSet = {}
-            objectCCW = {}
-            insides = {}
-            duals = []
-        else:
-            finished = True
-            
+                start = -1
+                end = -1
+                for i in range(len(UNKNOWN)):
+                    if("-cw" in UNKNOWN[i]):
+                        end = DIR.index(UNKNOWN[i][:4])
+                    elif("-ccw" in UNKNOWN[i]):
+                        start= DIR.index(UNKNOWN[i][:4])
+                if(end<start):
+                    end += 15
+                midAng = (int)(((((start+end)/2.0)+0.5)*22.5)%360)
+                while(len(UNKNOWN)>0):
+                    parts = UNKNOWN[0].split("-")
+                    if(parts[1]=="all"):
+                        sector_crs.insertRow([poly_row[2],"Unknown", parts[0],"complete-"+str(midAng)])
+                    else:
+                        sector_crs.insertRow([poly_row[2],"Unknown", parts[0],"partial-"+str(midAng)])
+                    del UNKNOWN[0]
 
-#Takes a set of sectors and organizes them into a counterclockwise list
-#Mirrorring polar coordinates, E is first, when all elements are present
-def sortSet(sectorSet,firstKey="x"):
-    sectorPoss = ['E','NE','N','NW','W','SW','S','SE']
+#Converts a set of sixteenths into the smallest possible set of most 
+#    granular sectors. This function is lossless in terms of the set
+#    of sixteenths.
+##labelSet - A list of sector names, in counterclockwise order
+def aggregate(labelSet):
+    allLabels = ["E","EENE","ENE","NENE","NE","ENNE","NNE","NNNE",
+                 "N","NNNW","NNW","WNNW","NW","NWNW","WNW","WWNW",
+                 "W","WWSW","WSW","SWSW","SW","WSSW","SSW","SSSW",
+                 "S","SSSE","SSE","ESSE","SE","SESE","ESE","EESE"]
+    sizes = ["Sixteenth","Eighth","Quarter","Half"]
+    if(len(labelSet)==1):
+        return labelSet
+    #Every pair of sixteenths becomes an eighth
+    ##[SixteenthNNNE,SixteenthNNNW] -> EighthN
+    eighths = []
+    eighthsCopy = [] #Collects eighths which do not get aggregated further
+    for i in range(1,len(labelSet)):
+        midLabel = allLabels[allLabels.index(labelSet[i][9:])-1]
+        eighths.append("Eighth"+midLabel)
+        eighthsCopy.append("Eighth"+midLabel)
+    if(len(eighths)==2):
+        return eighths
+    #Eligible groups of three eighths become a quarter
+    ##[EighthENE,EighthNE,EighthNNE] -> QuarterNE
+    ##[EighthNE,EighthNNE,EighthN] -> No change. QuarterNNE is invalid.
+    adj = 0
+    if(len(eighths[0][6:])<3):
+        #The first eighth is ineligible to start a quarter, so we skip it
+        adj = 1
+    quarts = []
+    for i in range(2+adj,len(eighths),2):#Every other eighth is eligible
+        quarts.append("Quarter"+eighths[i-1][6:])
+        for j in range(3):
+            if(eighths[i-j] in eighthsCopy):
+                del eighthsCopy[eighthsCopy.index(eighths[i-j])]
+    if(len(quarts)<3):
+        if(adj==0):
+            return quarts+eighthsCopy
+        else:
+            return eighthsCopy+quarts
+    #Groups of three quarters become a half
+    ##[QuarterNE,QuarterN,QuarterNW] -> HalfN
+    halves = []
+    for i in range(2,len(quarts)):
+        halves.append("Half"+quarts[i-1][7:])
+    return halves
+
+#Converts a set of sixteenths into a counterclockwise ordered list 
+##sectorSet - A set of sector names
+##fourLetter - Toggles between the two hierarchies of sixteenths
+##firstKey - Allows the specification of the most clockwise label if it
+##               is known to speed up execution
+def sortSet(sectorSet,fourLetter=True,firstKey="x"):
+    sectorPoss = ['E','ENE','NE','NNE','N','NNW','NW','WNW',
+                  'W','WSW','SW','SSW','S','SSE','SE','ESE']
+    if(fourLetter):
+        sectorPoss = ["EENE","NENE","ENNE","NNNE","NNNW","WNNW","NWNW","WWNW",
+                      "WWSW","SWSW","WSSW","SSSW","SSSE","ESSE","SESE","EESE"]
+    for sect in sectorSet:
+        if sect not in sectorPoss:
+            #Breaks if sectors are not collected correctly
+            return sectorSet
     ccwInd = 0
     cwInd = 0
     inRange = False
+    #left/right considers list notation. Left = clockwise. 
     leftFound = False
     rightFound = False
     if(firstKey is not "x"):
@@ -433,63 +317,363 @@ def sortSet(sectorSet,firstKey="x"):
             return sectorPoss[ccwInd:]+sectorPoss[:cwInd+1]
     else:
         return sectorPoss[ccwInd:cwInd+1]
+
+#Splits a sector label into a list of its size, its label, and a size index
+def splitLabel(label):
+    if("Half" in label):
+        return ["Half",label[4:],0]
+    elif("Quarter" in label):
+        return ["Quarter",label[7:],1]
+    elif("Eighth" in label):
+        return ["Eighth",label[6:],2]
+    elif("Sixteenth" in label):
+        return ["Sixteenth",label[9:],3]
+    return label
+
+#Generalizes sets of aggregated labels into a single label.
+##labelSet - dictionary where keys are target names and values are ordered
+##               aggregated lists of sectors
+##midAngs - dictionary where keys are target names and values are integers
+##               representing the angle of the middle of the shared border
+def generalize(labelSet,midAngs):
+    #print "###PRE-MULTISET GEN:",labelSet
+    sects = ["EENE","NENE","ENNE","NNNE","NNNW","WNNW","NWNW","WWNW",
+             "WWSW","SWSW","WSSW","SSSW","SSSE","ESSE","SESE","EESE"]
+    rays = ['E','ENE','NE','NNE','N','NNW','NW','WNW',
+            'W','WSW','SW','SSW','S','SSE','SE','ESE']   
+    sizeLabs = ["Half","Quarter","Eighth","Sixteenth"]
+    for key,value in labelSet.iteritems():
+        ################################################
+        ##### BEGINNING OF MULTISET GENERALIZATION #####
+        ################################################
+        if(len(value)>1):
+            cts = [0,0,0,0]
+            grps = {'Half':[],'Quarter':[],'Eighth':[],'Sixteenth':[]}
+            for longLab in value:
+                longSplit = splitLabel(longLab)
+                grps[longSplit[0]] += [longSplit[1]]
+                cts[longSplit[2]] += 1
+            """
+            EIGHT CASES
+            [2, 0, 0, 0] - give to half of shortest label
+            [0, 2, 0, 0] - give to best half
+            [0, 2, 1, 0] - give to best half
+            [0, 2, 2, 0] - give to best half
+            [0, 1, 1, 0] - quarter absorbs
+            [0, 1, 2, 0] - quarter absorbs
+            [0, 0, 2, 0] - give to best quarter
+            [0, 0, 3, 0] - give to best quarter
+            """
+            for i in range(4):
+                if(cts[i]>=2):
+                    if(i==0):
+                        shortLab = grps['Half'][0]
+                        for shortLabPoss in grps['Half']:
+                            if(len(shortLabPoss)<len(shortLab)):
+                                shortLab = shortLabPoss
+                        labelSet[key] = ["Half"+shortLab]
+                        break
+                    start = rays.index(grps[sizeLabs[i]][0])-math.pow(2,2-i)
+                    end = (rays.index(grps[sizeLabs[i]][cts[i]-1])+math.pow(2,2-i))%16
+                    if(start>end):
+                        start -= 16
+                    underSpan = []
+                    for j in range((int)(start),(int)(end)):
+                        underSpan += [sects[j]]
+                    underCt = collections.Counter(underSpan)
+                    upper = (int)(math.pow(2,4-i))
+                    bestMatch = 0
+                    bestLabel = ""
+                    for j in range(14-upper,15-upper-16,-2):
+                        upperSpan = []
+                        for k in range(upper):
+                            upperSpan += [sects[j+k]]
+                        upperCt = collections.Counter(upperSpan)
+                        intersection = (underCt & upperCt)
+                        if(len(intersection)>bestMatch):
+                            bestMatch = len(intersection)
+                            bestLabel = "xxxx"
+                        if(len(intersection)==bestMatch and
+                           len(bestLabel)>len(rays[j])):
+                            bestLabel = rays[j+(upper/2)]
+                    finalLabel = sizeLabs[i-1]+bestLabel
+                    labelSet[key] = [finalLabel]
+                    break
+                elif(cts[i]==1):
+                    labelSet[key] = [sizeLabs[i]+grps[sizeLabs[i]][0]]                    break
+    ###########################################
+    ##### END OF MULTISET GENERALIZATION  #####
+    ##### BEGINNING OF FORCING SIXTEENTHS #####
+    ###########################################
+    broadSet = []
+    noBroad = []
+    #revertable = []
+    #revertSet = {}
+    for key,value in labelSet.iteritems():
+        broadLab = splitLabel(value[0])#Assumes set length 1
+        if(broadLab[2]==3):
+            labInd = sects.index(broadLab[1])
+            newLab1 = rays[labInd]
+            newLab2 = rays[(labInd+1)%16]
+            labPair = ["Eighth"+newLab1,"Eighth"+newLab2]
+            labelSet[key] = labPair
+            broadSet.append(key)
+    ############################################
+    #####    END OF FORCING SIXTEENTHS     #####
+    ##### BEGINNING OF CONFLICT RESOLUTION #####
+    ############################################
+    resolving = True
+    while(resolving):
+        resolving = False
+        ctLabs = {}#<label,target>
+        ctTarg = {}#<target,number>
+        confLabs = []
+        confTarg = []
+        ##### Count Number of Conflicts #####
+        for key,value in labelSet.iteritems():
+            ctTarg[key] = 0
+            for lab in value:
+                splitVal = splitLabel(lab)
+                if(splitVal[1] not in ctLabs):
+                    ctLabs[splitVal[1]] = [key]
+                else:
+                    resolving = True
+                    ctLabs[splitVal[1]] += [key]
+                    for tgt in ctLabs[splitVal[1]]:
+                        ctTarg[tgt] += 1
+                        if(tgt not in confTarg):
+                            confTarg.append(tgt)
+                    if(splitVal[1] not in confLabs):
+                        confLabs.append(splitVal[1])
+        if(resolving):
+            reduced = False
+            ##### Reduction #####
+            for tgt in confTarg:
+                for lab in labelSet[tgt]:
+                    sl = splitLabel(lab)
+                    if(len(ctLabs[sl[1]])==1):
+                        reduced = True
+                        labelSet[tgt] = [lab]
+            forced = False
+            ##### Forcing Perfectly Overlapped Sectors to Change #####
+            if(not (reduced)):
+                for tgt1 in confTarg:
+                    if(not forced):
+                        for tgt2 in confTarg:
+                            if(labelSet[tgt1] == labelSet[tgt2] and
+                               not (tgt1==tgt2) and
+                               len(labelSet[tgt1])>=2):
+                                forced = True
+                                cpySet = labelSet[tgt1][:]
+                                onBreak = False
+                                if(abs(midAngs[tgt1]-midAngs[tgt2])>200):
+                                    onBreak = True
+                                if((midAngs[tgt1]>midAngs[tgt2] and not onBreak) or
+                                   (midAngs[tgt1]<midAngs[tgt2] and onBreak)):
+                                    hold = tgt1
+                                    tgt1 = tgt2
+                                    tgt2 = hold
+                                tgt1Mid = midAngs[tgt1]
+                                tgt2Mid = midAngs[tgt2]
+                                if(onBreak):
+                                    tgt2Mid += 360
+                                if(len(labelSet[tgt1])==3):
+                                    midSplit = splitLabel(labelSet[tgt1][1])
+                                    midAng = rays.index(midSplit[1])*22.5
+                                    if(onBreak and midAng<200):
+                                        midAng += 360
+                                    best = -1
+                                    if(abs(midAng-tgt1Mid)<abs(midAng-tgt2Mid)):
+                                        best = 0
+                                    else:
+                                        best = 1
+                                    tgts = [tgt1,tgt2]
+                                    labelSet[tgts[best]] = [cpySet[1]]
+                                    labelSet[tgts[1-best]] = [cpySet[2-(2*best)]]
+                                else:
+                                    labelSet[tgt1] = [cpySet[0]]
+                                    labelSet[tgt2] = [cpySet[1]]
+                                broadSet.remove(tgt1)
+                                broadSet.remove(tgt2)
+                                noBroad.append(tgt1)
+                                noBroad.append(tgt2)
+                                break
+            broadened = False
+            ##### Broadening Generalization #####
+            if(not (reduced or forced)):
+                for tgt in confTarg:
+                    if(tgt not in broadSet):
+                        broadened = True
+                        broadSet.append(tgt)
+                        broadLab = splitLabel(labelSet[tgt][0])#Assumes length 1
+                        labInd = rays.index(broadLab[1])
+                        dist = (int)(math.pow(2,2-broadLab[2]))
+                        newSize = sizeLabs[broadLab[2]-1]
+                        labelSet[tgt] = [newSize+rays[labInd-dist]]+labelSet[tgt]
+                        labelSet[tgt] += [newSize+rays[(labInd+dist)%16]]
+            if(not (reduced or forced or broadened)):                
+                print "Uncaught error. Sorry! Probably going to crash now."
+                resolving = False
+    ##### Reduce All Sets of Possibilities to Best Option #####
+    for key,value in labelSet.iteritems():
+        if(len(value)>1):
+            ptr = -1
+            minLab = 5
+            for i in range(len(value)):
+                sl = splitLabel(value[i])
+                if(len(sl[1])<minLab):
+                    minLab = len(sl[1])
+                    ptr = i
+            labelSet[key] = [labelSet[key][ptr]]
+    #print "###POST-SINGLE GEN (final):",labelSet
+    return labelSet
+
+#Reads sectors in from memory, and aggregates and generalizes them.
+##inpSectors - table created as per the collectSectors function
+def simplifySectors(inpSectors):
+    allLabels = ["E","EENE","ENE","NENE","NE","ENNE","NNE","NNNE",
+                 "N","NNNW","NNW","WNNW","NW","NWNW","WNW","WWNW",
+                 "W","WWSW","WSW","SWSW","SW","WSSW","SSW","SSSW",
+                 "S","SSSE","SSE","ESSE","SE","SESE","ESE","EESE"]
+    sectors = os.path.join(homeFolder,inpSectors)
+    sector_keys = ["ReferenceObj","TargetObj","Dir","Completeness"]
+    sector_crs = arcpy.da.SearchCursor(sectors,sector_keys)
+    finished=False #probably obsolete
+    row = sector_crs.next()
+    thisRef = row[0]
+    lastRef = row[0]
+    while(not finished):
+        tgtSet = {}#target names:sets of dirs
+        midAngs = {}#target name:center angle
+        while(thisRef == row[0] and not finished):
+            if(row[1] not in tgtSet):
+                tgtSet[row[1]] = set([row[2]])
+                midAngs[row[1]] = float(row[3].split("-")[1])
+            else:
+                tgtSet[row[1]] = tgtSet[row[1]] | set([row[2]])
+            try:
+                row = sector_crs.next()
+            except:
+                finished = True
+        print ""
+        print "##############Detailing:",lastRef
+        #print "###PRE AGGREGATION:"
+        for key,value in tgtSet.iteritems():
+            ordered = sortSet(value)
+            if(len(ordered)==1):
+                tgtSet[key] = ["Sixteenth"+ordered[0]]
+            else:
+                newSet = []
+                for i in range(len(ordered)):
+                    newSet.append("Sixteenth"+ordered[i])
+                tgtSet[key] = newSet
+            #print key,tgtSet[key]
+            tgtSet[key] = aggregate(tgtSet[key])
+            #print "...preparing to generalize..."
+        #print "###POST AGGREGATION:"
+        #for tgt in tgtSet:
+        #    print tgt,tgtSet[tgt]
+        #print "###midAngs:",midAngs
+        genSet = generalize(tgtSet,midAngs)
+        print "###POST GENERALIZATION:"#,genSet
+        for tgt in genSet:
+            print tgt,genSet[tgt]
+        #print "---------- Outputting relations for",lastRef,"----------"
+        #print tgtSet
+        thisRef = row[0]
+        lastRef = thisRef
+
+#A class for the direction-relation matrix
+#It is very much tuned for its usage in this program. (i.e. not general at all)
+#This was easier and less ambiguous to read than doing this inline
+class DRMatrix:
+    def __init__(self,boolAryArg):
+        self.boolAry = boolAryArg
+        tr = [3,2,1,4,8,0,5,6,7]
+        dr = ["E","NE","N","NW","W","SW","S","SE","C"]
+        for i in range(9):
+            if(not self.boolAry[i]):
+                dr[tr[i]]="x"
+        self.listRep = ""
+        for i in range(8):
+            if(dr[i] is not "x"):
+                self.listRep += dr[i]+","
+        self.listRep = self.listRep[:-1]
         
-#Concatenates a list of strings into one large comma separated string
-def compressRange(angRange):
-    outStr = ""
-    for ang in angRange:
-        outStr += ang+","
-    return outStr[:-1]
+    #Prints a visual representation of the matrix. Pad allows it to stay inline
+    def printMatrix(self,pad):
+        print pad+"-------------"
+        if(len(pad)>0):
+            print pad[:-1],
+        for i in range(9):
+            if(not self.boolAry[i]):
+                print "| F",
+            else:
+                print "| T",
+            if(i%3==2):
+                print "|"
+                print pad+"-------------"
+                if(len(pad)>0 and i is not 8):
+                    print pad[:-1],
 
-#Given two points, calculates the angle from one to the other in radians
-def polar_ang(origin_x,origin_y,pt_x,pt_y):
-    dx = pt_x - origin_x
-    dy = pt_y - origin_y
-    ang = math.atan2(dy,dx)
-    if(ang<0):
-        ang += 2*math.pi
-    return math.degrees(ang)
+    #Prints the list of sectors in counterclockwise order, excluding the center
+    def printList(self):
+        print self.listRep
+                
+        
+#Calculates the direction-relation matrix for each of a collection of polygons
+##inpTable - filepath to table of polygons
+##inpColName - names the column containing the polygon names
+def boundingBoxes(inpTable,inpColName):
+    polyFN = os.path.join(homeFolder,inpTable)
+    polyKeys = ["Shape@","Shape@XY",inpColName]
+    poly_crs_a = arcpy.da.SearchCursor(polyFN,polyKeys)
+    for poly_a in poly_crs_a:
+        print "Examining from",poly_a[2]
+        aExt = poly_a[0].extent
+        poly_crs_b = arcpy.da.SearchCursor(polyFN,polyKeys)
+        for poly_b in poly_crs_b:
+            if((poly_a[2] != poly_b[2]) and
+               (not poly_a[0].disjoint(poly_b[0]))):
+                print "  Intersection with",poly_b[2]+":"
+                tPoly = poly_a[0].union(poly_b[0])
+                tExt = tPoly.extent
+                PTS = []
+                for ypt in [tExt.YMax,aExt.YMax,aExt.YMin,tExt.YMin]:
+                    for xpt in [tExt.XMin,aExt.XMin,aExt.XMax,tExt.XMax]:
+                        PTS.append(arcpy.Point(xpt,ypt))
+                BXS = []
+                for i in range(9):
+                    tx = i%3
+                    ty = i/3
+                    TL = PTS[tx+(4*ty)]
+                    TR = PTS[tx+1+(4*ty)]
+                    BR = PTS[tx+1+(4*(ty+1))]
+                    BL = PTS[tx+(4*(ty+1))]
+                    BXS.append(arcpy.Polygon(arcpy.Array([TL,TR,BR,BL,TL])))
+                tf = []
+                for i in range(9):
+                    tf.append(not BXS[i].disjoint(poly_b[0]))
+                drm = DRMatrix(tf)
+                print "   ",
+                drm.printList()
 
-#Erases all of the elements in an ArcMap table
-def clearTable(tableCursor):
-    with arcpy.da.UpdateCursor(tableCursor,"OBJECTID") as cursor:
-        for row in cursor:
-            cursor.deleteRow()
-
-#For two crossing lines, decides whether or not it forms a bubble
-#An even number of crossings implies a bubble
-def countCrosses(baseLine,detailLine):
-    if(baseLine.disjoint(detailLine)):
-        print "Bad input to countCrosses. No crossing."
-        return None
-    myDif = detailLine.difference(baseLine)
-    pts = baseLine.intersect(myDif,1)
-    if(pts.pointCount%2==0):
-        return "bubble"
-    else:
-        return "partial"
-
-#Grabs the map axis 45 degrees clockwise of a given axis.
-#Not efficint for finding ranges, but good in a pinch
-def clockwiseRot(direction):
-    if(direction=="N"):
-        return "NE"
-    elif(direction=="NE"):
-        return "E"
-    elif(direction=="E"):
-        return "SE"
-    elif(direction=="SE"):
-        return "S"
-    elif(direction=="S"):
-        return "SW"
-    elif(direction=="SW"):
-        return "W"    
-    elif(direction=="W"):
-        return "NW"
-    elif(direction=="NW"):
-        return "N"
-
+print "Starting!"
 #collectIntersections("Maine\Counties_Trimmed","Shared_Borders")
 #collectMassCenters("Maine\Counties_Trimmed","COUNTY","Mass_Centers","County",True)            
-#findBorders("Maine\Counties_Trimmed","COUNTY","Shared_Borders","Intersect_Sectors_2",True)
-objectsAndDirections("Intersect_Sectors_2",True)
+
+#collectSectors("Maine\Counties_Trimmed","COUNTY","Shared_Borders","Intersect_Sectors_3",True)
+#print aggregate(["SixteenthENNE","SixteenthNNNE","SixteenthNNNW","SixteenthWNNW"]) #[Q_N]
+#print aggregate(["SixteenthEENE","SixteenthNENE"]) #[E_ENE]
+#print aggregate(["SixteenthENNE"]) #[S_ENNE]
+#print aggregate(["SixteenthWWSW","SixteenthSWSW","SixteenthWSSW","SixteenthSSSW",
+#                  "SixteenthSSSE","SixteenthESSE","SixteenthSESE","SixteenthEESE"]) #[H_S]
+#print aggregate(["SixteenthSWSW","SixteenthWSSW","SixteenthSSSW","SixteenthSSSE",
+#                 "SixteenthESSE","SixteenthSESE","SixteenthEESE","SixteenthEENE"]) #[H_S]
+#print aggregate(["SixteenthEESE","SixteenthEENE","SixteenthNENE"]) #[E_ENE,E_E]
+#print aggregate(["SixteenthENNE","SixteenthNNNE","SixteenthNNNW","SixteenthWNNW","SixteenthNWNW"]) #[Q_N,E_NW]
+#print aggregate(["SixteenthWNNW","SixteenthNWNW","SixteenthWWNW","SixteenthWWSW","SixteenthSWSW","SixteenthWSSW","SixteenthSSSW"]) #[Q_SW,Q_W,E_NW]
+
+simplifySectors("Intersect_Sectors_3")
+#boundingBoxes("Maine\Counties_Trimmed","COUNTY")
+print "...Done..."
