@@ -1,5 +1,6 @@
 import arcpy,os,sys,math,collections
 
+#This should be set to the filepath of your geodatabase
 homeFolder = 'C:\Users\Greg\ArcGIS\Test.gdb'
 
 #Collects the shared borders between objects
@@ -16,12 +17,14 @@ def collectIntersections(inpShape,outFC):
         print(err.args[0])
 
 #Erases all of the elements in an ArcMap table
+##tableCursor - arcpy.da.SearchCursor pointing into a table
 def clearTable(tableCursor):
     with arcpy.da.UpdateCursor(tableCursor,"OBJECTID") as cursor:
         for row in cursor:
             cursor.deleteRow()           
 
 #Collects the centroid of each polygon
+#Not used in data processing, but is nice to look at
 ##inpShape - name of a shapefile of polygons
 ##inpColName - column in above shapefile which names each polygon
 ##outTab - table where mass centers will be stored
@@ -75,7 +78,7 @@ def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool = False):
     poly_crs = arcpy.da.SearchCursor(polyFN,["Shape@","Shape@XY",inpColName])
     borders = os.path.join(homeFolder,inpFC)
     sectors = os.path.join(homeFolder,outTab)
-    sector_keys = ["ReferenceObj","TargetObj","Dir","Completeness"]
+    sector_keys = ["ReferenceObj","TargetObj","Dir","MidAngle"]
     sector_crs = arcpy.da.InsertCursor(sectors,sector_keys)
     if(clearBool):
         clearTable(sectors)
@@ -163,7 +166,8 @@ def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool = False):
                                     (not(LINES[i+1].disjoint(br1[0]))))):
                                 wholeness = "inside"
                             elif(not (LINES[i].disjoint(br1[0]))):
-                                wholeness = countCrosses(LINES[i],br1[0])                                if(temp_dir+"-all" in UNKNOWN):
+                                wholeness = countCrosses(LINES[i],br1[0])
+                                if(temp_dir+"-all" in UNKNOWN):
                                     UNKNOWN.remove(temp_dir+"-all")
                                     UNKNOWN.append(temp_dir+"-ccw")
                                 if(temp_dir+"-cw" in UNKNOWN):
@@ -177,8 +181,8 @@ def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool = False):
                                     UNKNOWN.remove(temp_dir+"-ccw")
                         mid = br1[0].positionAlongLine(0.50,True)[0]
                         midAng = int(polar_ang(C.X,C.Y,mid.X,mid.Y))
-                        wholeness += "-"+str(midAng)
-                        sector_crs.insertRow([br1[1],br2[1],temp_dir,wholeness])
+                        wholeness += "-"+str(midAng)#Not used anymore
+                        sector_crs.insertRow([br1[1],br2[1],temp_dir,str(midAng)])
                         
             try:
                 border_row = borders_crs.next()
@@ -188,8 +192,8 @@ def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool = False):
         if(len(UNKNOWN)>0):
             if(len(UNKNOWN)==1):
                 parts = UNKNOWN[0].split("-")
-                sector_crs.insertRow([poly_row[2],"Unknown",parts[0],
-                                      "inside-"+parts[1]])
+                #sector_crs.insertRow([poly_row[2],"Unknown",parts[0],"inside-"+parts[1]])
+                sector_crs.insertRow([poly_row[2],"Unknown",parts[0],parts[1]])
             else:
                 start = -1
                 end = -1
@@ -203,10 +207,11 @@ def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool = False):
                 midAng = (int)(((((start+end)/2.0)+0.5)*22.5)%360)
                 while(len(UNKNOWN)>0):
                     parts = UNKNOWN[0].split("-")
-                    if(parts[1]=="all"):
-                        sector_crs.insertRow([poly_row[2],"Unknown", parts[0],"complete-"+str(midAng)])
-                    else:
-                        sector_crs.insertRow([poly_row[2],"Unknown", parts[0],"partial-"+str(midAng)])
+                    sector_crs.insertRow([poly_row[2],"Unknown", parts[0],str(midAng)])
+                    #if(parts[1]=="all"):
+                    #    sector_crs.insertRow([poly_row[2],"Unknown", parts[0],"complete-"+str(midAng)])
+                    #else:
+                    #    sector_crs.insertRow([poly_row[2],"Unknown", parts[0],"partial-"+str(midAng)])
                     del UNKNOWN[0]
 
 #Converts a set of sixteenths into the smallest possible set of most 
@@ -229,7 +234,7 @@ def aggregate(labelSet):
         midLabel = allLabels[allLabels.index(labelSet[i][9:])-1]
         eighths.append("Eighth"+midLabel)
         eighthsCopy.append("Eighth"+midLabel)
-    if(len(eighths)==2):
+    if(len(eighths)<=2):
         return eighths
     #Eligible groups of three eighths become a quarter
     ##[EighthENE,EighthNE,EighthNNE] -> QuarterNE
@@ -342,6 +347,7 @@ def generalize(labelSet,midAngs):
     rays = ['E','ENE','NE','NNE','N','NNW','NW','WNW',
             'W','WSW','SW','SSW','S','SSE','SE','ESE']   
     sizeLabs = ["Half","Quarter","Eighth","Sixteenth"]
+    #print "LS",labelSet
     for key,value in labelSet.iteritems():
         ################################################
         ##### BEGINNING OF MULTISET GENERALIZATION #####
@@ -400,7 +406,9 @@ def generalize(labelSet,midAngs):
                     labelSet[key] = [finalLabel]
                     break
                 elif(cts[i]==1):
-                    labelSet[key] = [sizeLabs[i]+grps[sizeLabs[i]][0]]                    break
+                    labelSet[key] = [sizeLabs[i]+grps[sizeLabs[i]][0]]
+                    break
+    #print "LS2",labelSet
     ###########################################
     ##### END OF MULTISET GENERALIZATION  #####
     ##### BEGINNING OF FORCING SIXTEENTHS #####
@@ -530,14 +538,19 @@ def generalize(labelSet,midAngs):
 
 #Reads sectors in from memory, and aggregates and generalizes them.
 ##inpSectors - table created as per the collectSectors function
-def simplifySectors(inpSectors):
+##fn - a filename where final output will be written
+def simplifySectors(inpSectors,fn=None):
     allLabels = ["E","EENE","ENE","NENE","NE","ENNE","NNE","NNNE",
                  "N","NNNW","NNW","WNNW","NW","NWNW","WNW","WWNW",
                  "W","WWSW","WSW","SWSW","SW","WSSW","SSW","SSSW",
                  "S","SSSE","SSE","ESSE","SE","SESE","ESE","EESE"]
     sectors = os.path.join(homeFolder,inpSectors)
-    sector_keys = ["ReferenceObj","TargetObj","Dir","Completeness"]
+    sector_keys = ["ReferenceObj","TargetObj","Dir","MidAngle"]
     sector_crs = arcpy.da.SearchCursor(sectors,sector_keys)
+    fOut = None
+    fSpace = ""
+    if(fn):
+        fOut = open(fn,'w')
     finished=False #probably obsolete
     row = sector_crs.next()
     thisRef = row[0]
@@ -548,15 +561,19 @@ def simplifySectors(inpSectors):
         while(thisRef == row[0] and not finished):
             if(row[1] not in tgtSet):
                 tgtSet[row[1]] = set([row[2]])
-                midAngs[row[1]] = float(row[3].split("-")[1])
+                midAngs[row[1]] = float(row[3])
             else:
                 tgtSet[row[1]] = tgtSet[row[1]] | set([row[2]])
             try:
                 row = sector_crs.next()
             except:
                 finished = True
-        print ""
-        print "##############Detailing:",lastRef
+        if(fOut):
+            fOut.write(fSpace+"##############Detailing: "+str(lastRef))
+            fSpace = "\n\n"
+        else:
+            print ""
+            print "##############Detailing:",lastRef
         #print "###PRE AGGREGATION:"
         for key,value in tgtSet.iteritems():
             ordered = sortSet(value)
@@ -575,9 +592,15 @@ def simplifySectors(inpSectors):
         #    print tgt,tgtSet[tgt]
         #print "###midAngs:",midAngs
         genSet = generalize(tgtSet,midAngs)
-        print "###POST GENERALIZATION:"#,genSet
+        if(fOut):
+            fOut.write("\n###POST GENERALIZATION:")
+        else:
+            print "###POST GENERALIZATION:"
         for tgt in genSet:
-            print tgt,genSet[tgt]
+            if(fOut):
+                fOut.write("\n"+str(tgt)+" "+str(genSet[tgt]))
+            else:
+                print tgt,genSet[tgt]
         #print "---------- Outputting relations for",lastRef,"----------"
         #print tgtSet
         thisRef = row[0]
@@ -599,43 +622,64 @@ class DRMatrix:
             if(dr[i] is not "x"):
                 self.listRep += dr[i]+","
         self.listRep = self.listRep[:-1]
-        
-    #Prints a visual representation of the matrix. Pad allows it to stay inline
-    def printMatrix(self,pad):
-        print pad+"-------------"
-        if(len(pad)>0):
-            print pad[:-1],
+
+    #Returns a visual representation of the matrix
+    def visRep(self):
+        outLines = ["-------------"]
+        nextLine = ""
         for i in range(9):
             if(not self.boolAry[i]):
-                print "| F",
+                nextLine += "| F "
             else:
-                print "| T",
+                nextLine += "| T "
             if(i%3==2):
-                print "|"
-                print pad+"-------------"
-                if(len(pad)>0 and i is not 8):
-                    print pad[:-1],
+                nextLine += "|"
+                outLines.append(nextLine)
+                nextLine = ""
+                outLines.append("-------------")
+        return outLines
+        
+    #Prints the visual representation of the matrix.
+    #Pad allows it to stay inline
+    def printMatrix(self,pad=""):
+        for l in self.visRep():
+            print pad+l
 
-    #Prints the list of sectors in counterclockwise order, excluding the center
+    #Returns the list of sectors in counterclockwise order, excluding the center
     def printList(self):
-        print self.listRep
+        return self.listRep
                 
         
 #Calculates the direction-relation matrix for each of a collection of polygons
 ##inpTable - filepath to table of polygons
 ##inpColName - names the column containing the polygon names
-def boundingBoxes(inpTable,inpColName):
+def boundingBoxes(inpTable,inpColName,fn=None):
     polyFN = os.path.join(homeFolder,inpTable)
     polyKeys = ["Shape@","Shape@XY",inpColName]
     poly_crs_a = arcpy.da.SearchCursor(polyFN,polyKeys)
+    ltw = None
+    fOut = None
+    if(fn):
+        fOut = open(fn,'w')
     for poly_a in poly_crs_a:
-        print "Examining from",poly_a[2]
+        if(fOut):
+            if(ltw):
+                fOut.write(ltw+"\n")
+                ltw = None
+            fOut.write("Examining from "+str(poly_a[2])+"\n")
+        else:
+            print "Examining from",poly_a[2]
         aExt = poly_a[0].extent
         poly_crs_b = arcpy.da.SearchCursor(polyFN,polyKeys)
         for poly_b in poly_crs_b:
             if((poly_a[2] != poly_b[2]) and
                (not poly_a[0].disjoint(poly_b[0]))):
-                print "  Intersection with",poly_b[2]+":"
+                if(fOut):
+                    if(ltw):
+                        fOut.write(ltw+"\n")
+                    fOut.write("  Intersection with "+str(poly_b[2])+":\n")
+                else:
+                    print "  Intersection with",poly_b[2]+":"
                 tPoly = poly_a[0].union(poly_b[0])
                 tExt = tPoly.extent
                 PTS = []
@@ -655,25 +699,19 @@ def boundingBoxes(inpTable,inpColName):
                 for i in range(9):
                     tf.append(not BXS[i].disjoint(poly_b[0]))
                 drm = DRMatrix(tf)
-                print "   ",
-                drm.printList()
+                if(fOut):
+                    ltw = "   "+drm.printList()
+                else:
+                    print "   ",drm.printList()
+    if(fn):
+        fOut.write(ltw)
+        fOut.close()
 
-print "Starting!"
-#collectIntersections("Maine\Counties_Trimmed","Shared_Borders")
-#collectMassCenters("Maine\Counties_Trimmed","COUNTY","Mass_Centers","County",True)            
-
-#collectSectors("Maine\Counties_Trimmed","COUNTY","Shared_Borders","Intersect_Sectors_3",True)
-#print aggregate(["SixteenthENNE","SixteenthNNNE","SixteenthNNNW","SixteenthWNNW"]) #[Q_N]
-#print aggregate(["SixteenthEENE","SixteenthNENE"]) #[E_ENE]
-#print aggregate(["SixteenthENNE"]) #[S_ENNE]
-#print aggregate(["SixteenthWWSW","SixteenthSWSW","SixteenthWSSW","SixteenthSSSW",
-#                  "SixteenthSSSE","SixteenthESSE","SixteenthSESE","SixteenthEESE"]) #[H_S]
-#print aggregate(["SixteenthSWSW","SixteenthWSSW","SixteenthSSSW","SixteenthSSSE",
-#                 "SixteenthESSE","SixteenthSESE","SixteenthEESE","SixteenthEENE"]) #[H_S]
-#print aggregate(["SixteenthEESE","SixteenthEENE","SixteenthNENE"]) #[E_ENE,E_E]
-#print aggregate(["SixteenthENNE","SixteenthNNNE","SixteenthNNNW","SixteenthWNNW","SixteenthNWNW"]) #[Q_N,E_NW]
-#print aggregate(["SixteenthWNNW","SixteenthNWNW","SixteenthWWNW","SixteenthWWSW","SixteenthSWSW","SixteenthWSSW","SixteenthSSSW"]) #[Q_SW,Q_W,E_NW]
-
-simplifySectors("Intersect_Sectors_3")
-#boundingBoxes("Maine\Counties_Trimmed","COUNTY")
-print "...Done..."
+if __name__ == '__main__':
+    print "Starting!"
+    #collectIntersections("Maine\Counties_Trimmed","Shared_Borders")
+    #collectMassCenters("Maine\Counties_Trimmed","COUNTY","Mass_Centers","County",True)            
+    #collectSectors("Maine\Counties_Trimmed","COUNTY","Shared_Borders","Intersect_Sectors_4",True)
+    #simplifySectors("Intersect_Sectors_4")
+    boundingBoxes("Maine\Counties_Trimmed","COUNTY")
+    print "...Done..."

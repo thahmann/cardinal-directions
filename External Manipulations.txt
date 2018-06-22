@@ -1,0 +1,17 @@
+In order to get full usage of this project, an ArcGis database should be prepared with the following 3 items:
+P  - Shapefile of polygons 
+P* - A column in P containing names for each polygon
+F  - Empty feature class of lines
+D  - Table for data collection
+     Columns should be as follows: [OBJECTID*, ReferenceObj, TargetObj, Dir, MidAngle]
+
+All manipulations of these files can be done through the following 4 function executions:
+collectIntersections(P,F)
+collectSectors(P,P*,F,D)
+simplifySectors(D)
+boundingBoxes(P)
+
+TexTableGenerator requires as input the output of both simplifySectors and boundingBoxes
+Including a filename as an argument for either of those functions will make them write their output to that file
+
+AxiomGenerator has no file dependencies
