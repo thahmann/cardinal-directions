@@ -220,29 +220,28 @@ def aggregate(labelSet):
                  "N","NNNW","NNW","WNNW","NW","NWNW","WNW","WWNW",
                  "W","WWSW","WSW","SWSW","SW","WSSW","SSW","SSSW",
                  "S","SSSE","SSE","ESSE","SE","SESE","ESE","EESE"]
-    sizes = ["Sixteenth","Eighth","Quarter","Half"]
     if(len(labelSet)==1):
         return labelSet
     #Every pair of sixteenths becomes an eighth
-    ##[SixteenthNNNE,SixteenthNNNW] -> EighthN
+    ##[NNNE-16,NNNW-16] -> N-8
     eighths = []
     eighthsCopy = [] #Collects eighths which do not get aggregated further
     for i in range(1,len(labelSet)):
-        midLabel = allLabels[allLabels.index(labelSet[i][9:])-1]
-        eighths.append("Eighth"+midLabel)
-        eighthsCopy.append("Eighth"+midLabel)
+        midLabel = allLabels[allLabels.index(labelSet[i].split("-")[0])-1]
+        eighths.append(midLabel+"-8")
+        eighthsCopy.append(midLabel+"-8")
     if(len(eighths)<=2):
         return eighths
     #Eligible groups of three eighths become a quarter
-    ##[EighthENE,EighthNE,EighthNNE] -> QuarterNE
-    ##[EighthNE,EighthNNE,EighthN] -> No change. QuarterNNE is invalid.
+    ##[ENE-8,NE-8,NNE-8] -> NE-4
+    ##[NE-8,NNE-8,N-8] -> No change. NNE-4 is invalid.
     adj = 0
-    if(len(eighths[0][6:])<3):
+    if(len(eighths[0].split("-")[0])<3):
         #The first eighth is ineligible to start a quarter, so we skip it
         adj = 1
     quarts = []
     for i in range(2+adj,len(eighths),2):#Every other eighth is eligible
-        quarts.append("Quarter"+eighths[i-1][6:])
+        quarts.append(eighths[i-1].split("-")[0]+"-4")
         for j in range(3):
             if(eighths[i-j] in eighthsCopy):
                 del eighthsCopy[eighthsCopy.index(eighths[i-j])]
@@ -252,10 +251,10 @@ def aggregate(labelSet):
         else:
             return eighthsCopy+quarts
     #Groups of three quarters become a half
-    ##[QuarterNE,QuarterN,QuarterNW] -> HalfN
+    ##[NE-4,N-4,NW-4] -> N-2
     halves = []
     for i in range(2,len(quarts)):
-        halves.append("Half"+quarts[i-1][7:])
+        halves.append(quarts[i-1].split("-")[0]+"-2")
     return halves
 
 #Converts a set of sixteenths into a counterclockwise ordered list 
@@ -322,14 +321,14 @@ def sortSet(sectorSet,fourLetter=True,firstKey="x"):
 
 #Splits a sector label into a list of its size, its label, and a size index
 def splitLabel(label):
-    if("Half" in label):
-        return ["Half",label[4:],0]
-    elif("Quarter" in label):
-        return ["Quarter",label[7:],1]
-    elif("Eighth" in label):
-        return ["Eighth",label[6:],2]
-    elif("Sixteenth" in label):
-        return ["Sixteenth",label[9:],3]
+    if("-2" in label):
+        return ["2",label.split("-")[0],0]
+    elif("-4" in label):
+        return ["4",label.split("-")[0],1]
+    elif("-8" in label):
+        return ["8",label.split("-")[0],2]
+    elif("-16" in label):
+        return ["16",label.split("-")[0],3]
     return label
 
 #Generalizes sets of aggregated labels into a single label.
@@ -343,7 +342,7 @@ def generalize(labelSet,midAngs):
              "WWSW","SWSW","WSSW","SSSW","SSSE","ESSE","SESE","EESE"]
     rays = ['E','ENE','NE','NNE','N','NNW','NW','WNW',
             'W','WSW','SW','SSW','S','SSE','SE','ESE']   
-    sizeLabs = ["Half","Quarter","Eighth","Sixteenth"]
+    sizeLabs = ["2","4","8","16"]
     #print "LS",labelSet
     for key,value in labelSet.iteritems():
         ################################################
@@ -351,7 +350,7 @@ def generalize(labelSet,midAngs):
         ################################################
         if(len(value)>1):
             cts = [0,0,0,0]
-            grps = {'Half':[],'Quarter':[],'Eighth':[],'Sixteenth':[]}
+            grps = {"2":[],"4":[],"8":[],"16":[]}
             for longLab in value:
                 longSplit = splitLabel(longLab)
                 grps[longSplit[0]] += [longSplit[1]]
@@ -370,11 +369,11 @@ def generalize(labelSet,midAngs):
             for i in range(4):
                 if(cts[i]>=2):
                     if(i==0):
-                        shortLab = grps['Half'][0]
-                        for shortLabPoss in grps['Half']:
+                        shortLab = grps['2'][0]
+                        for shortLabPoss in grps['2']:
                             if(len(shortLabPoss)<len(shortLab)):
                                 shortLab = shortLabPoss
-                        labelSet[key] = ["Half"+shortLab]
+                        labelSet[key] = [shortLab+"-2"]
                         break
                     start = rays.index(grps[sizeLabs[i]][0])-math.pow(2,2-i)
                     end = (rays.index(grps[sizeLabs[i]][cts[i]-1])+math.pow(2,2-i))%16
@@ -399,11 +398,11 @@ def generalize(labelSet,midAngs):
                         if(len(intersection)==bestMatch and
                            len(bestLabel)>len(rays[j])):
                             bestLabel = rays[j+(upper/2)]
-                    finalLabel = sizeLabs[i-1]+bestLabel
+                    finalLabel = bestLabel+"-"+sizeLabs[i-1]
                     labelSet[key] = [finalLabel]
                     break
                 elif(cts[i]==1):
-                    labelSet[key] = [sizeLabs[i]+grps[sizeLabs[i]][0]]
+                    labelSet[key] = [grps[sizeLabs[i]][0]+"-"+sizeLabs[i]]
                     break
     #print "LS2",labelSet
     ###########################################
@@ -420,7 +419,7 @@ def generalize(labelSet,midAngs):
             labInd = sects.index(broadLab[1])
             newLab1 = rays[labInd]
             newLab2 = rays[(labInd+1)%16]
-            labPair = ["Eighth"+newLab1,"Eighth"+newLab2]
+            labPair = [newLab1+"-8",newLab2+"-8"]
             labelSet[key] = labPair
             broadSet.append(key)
     ############################################
@@ -513,9 +512,9 @@ def generalize(labelSet,midAngs):
                         broadLab = splitLabel(labelSet[tgt][0])#Assumes length 1
                         labInd = rays.index(broadLab[1])
                         dist = (int)(math.pow(2,2-broadLab[2]))
-                        newSize = sizeLabs[broadLab[2]-1]
-                        labelSet[tgt] = [newSize+rays[labInd-dist]]+labelSet[tgt]
-                        labelSet[tgt] += [newSize+rays[(labInd+dist)%16]]
+                        newSize = "-"+sizeLabs[broadLab[2]-1]
+                        labelSet[tgt] = [rays[labInd-dist]+newSize]+labelSet[tgt]
+                        labelSet[tgt] += [rays[(labInd+dist)%16]+newSize]
             if(not (reduced or forced or broadened)):                
                 print "Uncaught error. Sorry! Probably going to crash now."
                 resolving = False
@@ -575,11 +574,11 @@ def simplifySectors(inpSectors,fn=None):
         for key,value in tgtSet.iteritems():
             ordered = sortSet(value)
             if(len(ordered)==1):
-                tgtSet[key] = ["Sixteenth"+ordered[0]]
+                tgtSet[key] = [ordered[0]+"-16"]
             else:
                 newSet = []
                 for i in range(len(ordered)):
-                    newSet.append("Sixteenth"+ordered[i])
+                    newSet.append(ordered[i]+"-16")
                 tgtSet[key] = newSet
             #print key,tgtSet[key]
             tgtSet[key] = aggregate(tgtSet[key])
@@ -611,5 +610,6 @@ if __name__ == '__main__':
     #collectIntersections("Maine\Counties_Trimmed","Shared_Borders")
     #collectMassCenters("Maine\Counties_Trimmed","COUNTY","Mass_Centers","County",True)            
     #collectSectors("Maine\Counties_Trimmed","COUNTY","Shared_Borders","Intersect_Sectors_4",True)
-    #simplifySectors("Intersect_Sectors_4")
+    simplifySectors("Intersect_Sectors_4","ForTex_Ours2.txt")
+    
     print "...Done..."

@@ -126,26 +126,26 @@ SixteenthB = Hierarchy(False,["EENE","NENE","ENNE","NNNE","NNNW","WNNW",
                               "SSSE","ESSE","SESE","EESE"])
 AllHierarchies = [HalfA,HalfB,HalfC,HalfD,QuarterA,
                   QuarterB,EighthA,EighthB,SixteenthA,SixteenthB]
-Sizes = {2:"Half",4:"Quarter",8:"Eighth",16:"Sixteenth"}
+Sizes = {2:"-2",4:"-4",8:"-8",16:"-16"}
 
 ## The following 6 functions are shorthand used later ##
-def po(size,dir):
-    return ["_BFN","BCont",["x"],["_FN",size+dir,["x"]]]
+def po(size,dir1):
+    return ["_BFN","BCont",["x"],["_FN",dir1+size,["x"]]]
 
 def bc(dir1,dir2,size):
-    return ["_F",["x"],["_BFN","BCont",["_FN","Ray"+dir1,["x"]],["_FN",size+dir2,["x"]]]]
+    return ["_F",["x"],["_BFN","BCont",["_FN",dir1+"-Ray",["x"]],["_FN",dir2+size,["x"]]]]
 
 def sc(dir1,dir2):
-    return ["_F",["x"],["_BFN","SC",["_FN","Sixteenth"+dir1,["x"]],["_FN","Sixteenth"+dir2,["x"]]]]
+    return ["_F",["x"],["_BFN","SC",["_FN",dir1+"-16",["x"]],["_FN",dir2+"-16",["x"]]]]
 
 def rd(dir1,dir2,size):
-    return ["_F",["x"],["_BFN","\xacPO",["_FN",size+dir1,["x"]],["_FN",size+dir2,["x"]]]]
+    return ["_F",["x"],["_BFN","\xacPO",["_FN",dir1+size,["x"]],["_FN",dir2+size,["x"]]]]
 
 def part(size1,size2,dir1,dir2):
-    return ["_F",["x"],["_BFN","P",["_FN",size1+dir1,["x"]],["_FN",size2+dir2,["x"]]]]
+    return ["_F",["x"],["_BFN","P",["_FN",dir1+size1,["x"]],["_FN",dir2+size2,["x"]]]]
 
 def inc(dir1,size):
-    return ["_F",["x"],["_BFN","TangRayCont",["_FN","Ray"+dir1,["x"]],["_FN",size+dir1,["x"]]]]
+    return ["_F",["x"],["_BFN","TangRayCont",["_FN",dir1+"-Ray",["x"]],["_FN",dir1+size,["x"]]]]
 
 #Saying x is East of y means the sector could be any size
 def Underspecified(H):

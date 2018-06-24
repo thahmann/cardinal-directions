@@ -40,20 +40,8 @@ def WriteTable(fn1="ForTex_DRM.txt",fn2="ForTex_Ours.txt"):
         if("Unknown" in tgtSet):
             tgtSet.remove("Unknown")
         for tgt in tgtSet:
-            carDir = ""
-            numRep = ""
-            if("Half" in tgtCAR[tgt]):
-                carDir = tgtCAR[tgt][4:]
-                numRep = carDir+"-2"
-            elif("Quarter" in tgtCAR[tgt]):
-                carDir = tgtCAR[tgt][7:]
-                numRep = carDir+"-4"
-            elif("Eighth" in tgtCAR[tgt]):
-                carDir = tgtCAR[tgt][6:]
-                numRep = carDir+"-8"
-            elif("Sixteenth" in tgtCAR[tgt]):
-                carDir = tgtCAR[tgt][9:]
-                numRep = carDir+"-16"
+            carDir = tgtCAR[tgt].split("-")[0]
+            numRep = tgtCAR[tgt]
             print fromObj,"&",tgt,"&",
             drmRow = ""
             if(carDir in tgtDRM[tgt]):
@@ -86,4 +74,4 @@ def WriteTable(fn1="ForTex_DRM.txt",fn2="ForTex_Ours.txt"):
     fCAR.close()
 
 if __name__ == '__main__':
-    WriteTable()
+    WriteTable(fn2="ForTex_Ours2.txt")
