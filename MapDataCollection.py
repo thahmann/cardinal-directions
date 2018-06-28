@@ -70,7 +70,9 @@ def polar_ang(origin_x,origin_y,pt_x,pt_y):
 ##inpFC - name of feature class containing shared borders between polygons
 ##outTab - name of table where the data will be written
 ##clearBool - False appends data to output table, True clears the table first
-def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool = False):
+##specTgt - Specify a target to only collect that one as reference. Leave blank
+##          to collect from each object as reference.
+def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool=False,specTgt=None):
     polyFN = os.path.join(homeFolder,inpShape)
     poly_crs = arcpy.da.SearchCursor(polyFN,["Shape@","Shape@XY",inpColName])
     borders = os.path.join(homeFolder,inpFC)
@@ -80,6 +82,8 @@ def collectSectors(inpShape,inpColName,inpFC,outTab,clearBool = False):
     if(clearBool):
         clearTable(sectors)
     for poly_row in poly_crs:
+        if((specTgt is not None) and not (poly_row[2] == specTgt)):
+            continue
         center = poly_row[1]
         cx = center[0]
         cy = center[1]
@@ -608,8 +612,8 @@ homeFolder = 'C:\Users\Greg\ArcGIS\Test.gdb'
 if __name__ == '__main__':
     print "Starting!"
     #collectIntersections("Maine\Counties_Trimmed","Shared_Borders")
-    #collectMassCenters("Maine\Counties_Trimmed","COUNTY","Mass_Centers","County",True)            
+    ##collectMassCenters("Maine\Counties_Trimmed","COUNTY","Mass_Centers","County",True)            
     #collectSectors("Maine\Counties_Trimmed","COUNTY","Shared_Borders","Intersect_Sectors_4",True)
-    simplifySectors("Intersect_Sectors_4","ForTex_Ours2.txt")
+    simplifySectors("Intersect_Sectors_4")
     
     print "...Done..."
